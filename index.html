@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>Monaco GT Racer</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="game-canvas"></canvas>
+
+        <!-- Title Screen -->
+        <div id="title-screen" class="screen">
+            <div class="title-content">
+                <h1 class="game-title">MONACO<br>GT RACER</h1>
+                <p class="subtitle">16-BIT ARCADE EDITION</p>
+                <div class="start-prompt blink">TAP TO START</div>
+                <div class="credits">© 2026 PIXEL SPEED STUDIOS</div>
+            </div>
+        </div>
+
+        <!-- HUD Overlay -->
+        <div id="hud" class="hidden">
+            <div class="hud-top">
+                <div class="lap-counter">
+                    <span class="label">LAP</span>
+                    <span id="current-lap">1</span>/<span id="total-laps">3</span>
+                </div>
+                <div class="position">
+                    <span class="label">POS</span>
+                    <span id="player-position">1</span><span class="ordinal">ST</span>
+                </div>
+                <div class="time">
+                    <span class="label">TIME</span>
+                    <span id="race-time">0:00.00</span>
+                </div>
+            </div>
+            <div class="speedometer">
+                <div id="speed-value">0</div>
+                <div class="speed-unit">KM/H</div>
+                <div class="speed-bar-container">
+                    <div id="speed-bar"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Touch Controls -->
+        <div id="touch-controls" class="hidden">
+            <div class="steering-zone" id="steering-zone">
+                <div class="steering-indicator" id="steering-indicator"></div>
+            </div>
+            <div class="pedal-zone">
+                <button class="pedal brake" id="brake-btn">BRAKE</button>
+                <button class="pedal gas" id="gas-btn">GAS</button>
+            </div>
+        </div>
+
+        <!-- Countdown Overlay -->
+        <div id="countdown" class="hidden">
+            <span id="countdown-text">3</span>
+        </div>
+
+        <!-- Pause Menu -->
+        <div id="pause-menu" class="screen hidden">
+            <div class="menu-content">
+                <h2>PAUSED</h2>
+                <button class="menu-btn" id="resume-btn">RESUME</button>
+                <button class="menu-btn" id="restart-btn">RESTART</button>
+                <button class="menu-btn" id="quit-btn">QUIT</button>
+            </div>
+        </div>
+
+        <!-- Race Complete Screen -->
+        <div id="race-complete" class="screen hidden">
+            <div class="menu-content">
+                <h2 id="result-title">RACE COMPLETE!</h2>
+                <div class="results">
+                    <div class="result-row">
+                        <span>POSITION</span>
+                        <span id="final-position">1ST</span>
+                    </div>
+                    <div class="result-row">
+                        <span>BEST LAP</span>
+                        <span id="best-lap-time">0:00.00</span>
+                    </div>
+                    <div class="result-row">
+                        <span>TOTAL TIME</span>
+                        <span id="total-time">0:00.00</span>
+                    </div>
+                </div>
+                <button class="menu-btn" id="race-again-btn">RACE AGAIN</button>
+                <button class="menu-btn" id="main-menu-btn">MAIN MENU</button>
+            </div>
+        </div>
+
+        <!-- Pause Button -->
+        <button id="pause-btn" class="hidden">❚❚</button>
+    </div>
+
+    <script src="js/audio.js"></script>
+    <script src="js/sprites.js"></script>
+    <script src="js/track.js"></script>
+    <script src="js/renderer.js"></script>
+    <script src="js/controls.js"></script>
+    <script src="js/game.js"></script>
+</body>
+</html>
