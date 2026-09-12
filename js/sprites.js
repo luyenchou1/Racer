@@ -78,10 +78,11 @@ function carLegend(body, dark, hi) {
   };
 }
 // Yawed variant: cabin slides toward the turn, a sliver of side panel shows on the outside.
-function carVariant(dir, legend) {
+// amp 1 = steering, amp 2 = drifting (the whole body is yawed twice as far).
+function carVariant(dir, legend, amp = 1) {
   const rows = CAR_ART.map((r, y) => {
     if (y <= 6) {
-      const shift = dir * (3 - Math.floor(y / 3)); // 3,3,3,2,2,2,1
+      const shift = dir * amp * (3 - Math.floor(y / 3)); // 3,3,3,2,2,2,1
       return shift > 0 ? '.'.repeat(shift) + r.slice(0, r.length - shift) : r.slice(-shift) + '.'.repeat(-shift);
     }
     if (y >= 10 && y <= 15) {
@@ -123,6 +124,8 @@ const Sprites = {
         straight: fromStrings(CAR_ART, legend),
         left: carVariant(-1, legend),
         right: carVariant(1, legend),
+        driftLeft: carVariant(-1, legend, 2),
+        driftRight: carVariant(1, legend, 2),
       };
     }
     const A = this.all;
@@ -477,7 +480,8 @@ const Sprites = {
 };
 
 // Colour helpers for cars to draw their turbo flames / brake lights on top.
-Sprites.carVariant = function (colour, dir) {
+Sprites.carVariant = function (colour, dir, drift) {
   const c = this.cars[colour] || this.cars.red;
+  if (drift) return dir < 0 ? c.driftLeft : c.driftRight;
   return dir < 0 ? c.left : (dir > 0 ? c.right : c.straight);
 };

@@ -48,13 +48,16 @@ class Renderer {
     this.ctx.imageSmoothingEnabled = false;
     this.dctx.imageSmoothingEnabled = false;
     this.portrait = H > W;
+    // Landscape is the primary layout: the scene fills the screen and the HUD /
+    // controls float over it. Portrait keeps a dashboard under the scene.
     this.dashH = this.portrait ? Math.round(H * 0.40) : 0;
     this.sceneH = H - this.dashH;
-    this.horizonY = Math.round(this.sceneH * (this.portrait ? 0.40 : 0.42));
+    this.horizonY = Math.round(this.sceneH * (this.portrait ? 0.40 : 0.37));
     this.f = W / 2;
     // camera height so the road fills ~1.7 screen widths at the bottom of the
-    // scene in portrait (a wide screen needs a narrower road to look right)
-    this.roadBottom = this.portrait ? 0.85 : 0.5;
+    // scene in portrait; a wide 19.5:9 screen wants a narrower road (about
+    // 1.1 widths) so the corners ahead read properly
+    this.roadBottom = this.portrait ? 0.85 : 0.56;
     this.cameraHeight = (this.sceneH - this.horizonY) * this.roadWidth / (this.roadBottom * W);
     this.playerY = this.sceneH - Math.round(this.sceneH * 0.035);
     this.playerZ = this.cameraDepth * this.cameraHeight * this.f / (this.playerY - this.horizonY);
@@ -505,10 +508,13 @@ class Renderer {
     if (!game.showPlayer) return;
     const ctx = this.ctx;
     const k = this.playerScale * this.roadWidth * this.f * SPRITE_UNIT;
-    const img = Sprites.carVariant(game.playerColour, game.steerDir);
+    const yaw = game.driftYaw || 0;
+    const drift = Math.abs(yaw) > 0.4;
+    const img = drift ? Sprites.carVariant(game.playerColour, yaw > 0 ? 1 : -1, true) : Sprites.carVariant(game.playerColour, game.steerDir);
     const dw = Math.round(img.w * k), dh = Math.round(img.h * k);
     const bounce = game.bounce;
-    const x = Math.round(this.W / 2 - dw / 2), y = this.playerY - dh + bounce;
+    // a drifting car sits a little toward the inside of the slide
+    const x = Math.round(this.W / 2 - dw / 2 + yaw * 3 * k), y = this.playerY - dh + bounce;
     // shadow
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.fillRect(x + Math.round(dw * 0.05), this.playerY - Math.round(k * 2), Math.round(dw * 0.9), Math.round(k * 2));
@@ -533,8 +539,16 @@ class Renderer {
     // drift / off-road smoke and sparks come from the particle system
     if (game.drifting || game.offroad) {
       const col = game.offroad ? '#a89878' : '#e8e8f0';
-      if (Math.random() < 0.7) this.spawn(x + Math.round(3 * k) + Math.random() * 3, this.playerY - 2, -10 - Math.random() * 20, -8 - Math.random() * 12, 0.5, col, Math.round(k * 1.5), -12);
-      if (Math.random() < 0.7) this.spawn(x + dw - Math.round(3 * k) - Math.random() * 3, this.playerY - 2, 10 + Math.random() * 20, -8 - Math.random() * 12, 0.5, col, Math.round(k * 1.5), -12);
+      // rear wheels; a drift throws thick smoke out of the outside of the slide
+      const out = -yaw * 30, n = game.drifting ? 2 : 1;
+      for (let i = 0; i < n; i++) {
+        if (Math.random() < 0.75) this.spawn(x + Math.round(3 * k) + Math.random() * 3 * k, this.playerY - 2, -12 - Math.random() * 24 + out, -10 - Math.random() * 16, 0.45 + Math.random() * 0.25, col, Math.round(k * (1.5 + Math.random())), -14);
+        if (Math.random() < 0.75) this.spawn(x + dw - Math.round(3 * k) - Math.random() * 3 * k, this.playerY - 2, 12 + Math.random() * 24 + out, -10 - Math.random() * 16, 0.45 + Math.random() * 0.25, col, Math.round(k * (1.5 + Math.random())), -14);
+      }
+    } else if (game.understeer > 0.04) {
+      // front tyres scrubbing: a little smoke from the outside front wheel
+      const side = game.understeerSide || 1;
+      if (Math.random() < 0.5) this.spawn(x + (side > 0 ? dw - Math.round(4 * k) : Math.round(4 * k)), y + Math.round(dh * 0.55), side * (10 + Math.random() * 20), -6 - Math.random() * 8, 0.35, '#d8d8e0', Math.round(k), -10);
     }
   }
 

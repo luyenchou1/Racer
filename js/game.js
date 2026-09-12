@@ -7,6 +7,28 @@ const CAR_HW = 0.17;              // car half width in road half-widths
 const AI_COLOURS = ['blue', 'yellow', 'green', 'white', 'purple', 'orange'];
 const GEARS = [0, 0.13, 0.27, 0.43, 0.61, 0.80];
 
+// ----- handling model (tune here) -----
+const GRIP_K = 0.065;             // grip speed = 1 - GRIP_K * |curve|  (hairpin 9 -> 0.415, Ste Devote 5 -> 0.675, Casino 2 -> 0.87)
+const GRIP_MIN = 0.35;
+const GRIP_LOOKAHEAD = 20;        // segments: the grip limit is announced this far ahead so braking is predictable
+const CURVE_PUSH = 0.5;           // outward push per unit curve at full speed (below the grip limit)
+const UNDERSTEER_PUSH = 3.0;      // extra push per unit of excess speed (linear)...
+const UNDERSTEER_PUSH2 = 6.0;     // ...and squared: entering far too hot washes the car right out
+const UNDERSTEER_STEER_LOSS = 1.5; // steering authority lost per unit of excess (floor 0.35)
+const UNDERSTEER_SCRUB = 3000;    // speed scrubbed per second per unit of excess
+const DRIFT_MIN_SPEED = 0.55;     // speedPct needed to start a drift
+const DRIFT_MIN_STEER = 0.5;      // steer needed (with brake) to start a drift
+const DRIFT_END_SPEED = 0.3;      // drift collapses below this
+const DRIFT_LAT = 0.85;           // steer authority while drifting (the yaw itself carries the car inward, see DRIFT_YAW_PULL)
+const DRIFT_YAW_PULL = 0.5;       // road half-widths per second the fully yawed car walks toward the inside
+const DRIFT_CURVE_RELIEF = 0.55;  // curve push multiplier while drifting (grip penalty suspended)
+const DRIFT_SCRUB = 2600;         // speed scrubbed per second while drifting, x (0.5 + speedPct): with gas held a drift settles at ~65%
+const DRIFT_REWARD_MIN = 0.6;     // seconds of clean drift before turbo is awarded
+const DRIFT_REWARD_RATE = 0.22;   // turbo per second of drift...
+const DRIFT_REWARD_MAX = 0.5;     // ...capped
+const AI_GRIP_BONUS = 0.10;       // AI may carry this much more speed than the player's grip limit
+const AI_LOOKAHEAD = 16;          // extra segments the AI looks ahead (they brake more gently)
+
 function fmtTime(t) {
   if (t === null || t === undefined || !isFinite(t)) return '-:--.--';
   const m = Math.floor(t / 60), s = Math.floor(t % 60), c = Math.floor((t * 100) % 100);
@@ -36,7 +58,10 @@ class Game {
     } catch (e) { /* ignore */ }
     document.getElementById('crt').classList.toggle('on', this.crt);
     this.input.setMuteIcon(this.audio.muted);
+    this.input.setRadioIcon(this.audio.stationInfo().off);
     this.menuRects = [];
+    this.tunerRects = [];
+    this.buildGrip();
     this.time = 0;
     this.messages = [];
     this.cameraY = 0;
@@ -47,6 +72,18 @@ class Game {
       return (sec.scenery || []).some(r => /grandstand|pool/.test(r.sprite)) ? 1 : 0;
     });
     this.resetRace(true);
+  }
+
+  // Grip speed per segment: the tightest curve in the next GRIP_LOOKAHEAD
+  // segments sets the limit, so the limit drops before the corner arrives.
+  buildGrip() {
+    const segs = this.track.segments, N = segs.length;
+    this.gripAt = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      let c = 0;
+      for (let k = 0; k < GRIP_LOOKAHEAD; k++) c = Math.max(c, Math.abs(segs[(i + k) % N].curve));
+      this.gripAt[i] = clamp(1 - GRIP_K * c, GRIP_MIN, 1);
+    }
   }
 
   // ---------- setup ----------
@@ -64,6 +101,8 @@ class Game {
     this.steerDir = 0;
     this.braking = false;
     this.drifting = false;
+    this.driftDir = 0; this.driftAngle = 0; this.driftYaw = 0; this.driftTime = 0; this.driftClean = true; this.driftCooldown = 0;
+    this.understeer = 0; this.understeerSide = 0; this.gripPct = 1;
     this.offroad = false;
     this.bounce = 0;
     this.finishRank = 0;
@@ -109,9 +148,24 @@ class Game {
     this.audio.unlock();
     if (this.audio.ok && !this.audio.musicOn) this.audio.startMusic();
   }
+  nextStation() { this.setStation(this.audio.station + 1); }
+  prevStation() { this.setStation(this.audio.station - 1); }
+  setStation(i) {
+    this.audio.unlock();
+    this.audio.setStation(i);
+    const st = this.audio.stationInfo();
+    this.input.setRadioIcon(!!st.off);
+    if (this.state !== 'title') this.message(st.off ? 'RADIO OFF' : st.name, 1.6, PAL.CYAN, 'radio');
+    else if (!this.audio.ok) this.audio.blip();
+  }
   onTap(x, y) {
     this.userGesture();
-    if (this.state === 'title') { this.startRace(); return; }
+    if (this.state === 'title') {
+      for (const r of this.tunerRects) {
+        if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) { r.action(); return; }
+      }
+      this.startRace(); return;
+    }
     if (this.state === 'finished' && this.finishTimer > 1.2) { this.audio.blip(); this.toTitle(); return; }
     if (this.state === 'paused') {
       for (const r of this.menuRects) {
@@ -135,11 +189,14 @@ class Game {
     this.audio.setPaused(true);
     this.audio.setSqueal(0); this.audio.setOffroad(0);
     this.audio.blip();
+    this.input.showPads(false); // the menu sits where the overlay pads are in landscape
+    this.input.reset();
   }
   resumeRace() {
     if (this.state !== 'paused') return;
     this.state = this.stateBeforePause || 'racing';
     this.audio.setPaused(false);
+    this.input.showPads(true);
   }
   toTitle() {
     this.state = 'title';
@@ -221,15 +278,50 @@ class Game {
     this.speed = clamp(this.speed, 0, maxSpeed);
     if (!this.turboActive && this.speed > MAX_SPEED) this.speed = Math.max(MAX_SPEED, this.speed - 3000 * dt);
 
-    // ----- lateral -----
-    const lat = dt * (0.5 + 1.9 * speedPct);
-    this.playerX += steer * lat;
+    // ----- grip / understeer / drift -----
     const curve = playerSeg.curve;
-    this.playerX -= dt * 2 * speedPct * speedPct * curve * 0.45;
-    // drifting: hard steering at speed
-    this.drifting = racing && Math.abs(steer) > 0.6 && speedPct > 0.62 && (Math.abs(curve) > 1.5 || brake);
-    if (this.drifting) { this.playerX += steer * dt * 0.35; this.speed -= 500 * dt; }
-    const squeal = this.drifting ? 0.6 + 0.4 * speedPct : (brake && speedPct > 0.45 && !offroad ? 0.35 : 0);
+    const grip = this.gripAt[playerSeg.index];
+    this.gripPct = grip;
+    const excess = Math.max(0, speedPct - grip);
+    let steerAuth = 1, curvePush = CURVE_PUSH, latGain = 1;
+    this.understeer = 0;
+    this.driftCooldown = Math.max(0, this.driftCooldown - dt);
+    if (racing && !this.drifting && brake && Math.abs(steer) >= DRIFT_MIN_STEER && speedPct > DRIFT_MIN_SPEED && !offroad && this.driftCooldown <= 0) {
+      this.startDrift(steer > 0 ? 1 : -1);
+    }
+    if (this.drifting) {
+      this.driftTime += dt;
+      const hold = steer * this.driftDir >= 0.25;
+      const target = hold && gas ? this.driftDir : 0;
+      const rate = hold ? (gas ? 6 : 2.2) : 7;
+      this.driftAngle += (target - this.driftAngle) * Math.min(1, dt * rate);
+      latGain = DRIFT_LAT;
+      curvePush = CURVE_PUSH * DRIFT_CURVE_RELIEF;
+      this.playerX += this.driftAngle * dt * DRIFT_YAW_PULL; // the yawed car walks toward the inside
+      if (this.speed > MAX_SPEED * DRIFT_END_SPEED) this.speed -= DRIFT_SCRUB * (0.5 + speedPct) * dt;
+      if (speedPct < DRIFT_END_SPEED || offroad) this.endDrift(false);
+      else if (!hold && Math.abs(this.driftAngle) < 0.2) this.endDrift(true);
+      else if (hold && !gas && Math.abs(this.driftAngle) < 0.3) this.endDrift(true);
+    } else if (excess > 0.01 && Math.abs(curve) > 0.3 && !offroad) {
+      // understeer: too fast for the corner - the car washes wide, the wheel goes light
+      this.understeer = excess;
+      this.understeerSide = curve > 0 ? -1 : 1;
+      curvePush += excess * (UNDERSTEER_PUSH + excess * UNDERSTEER_PUSH2);
+      steerAuth = Math.max(0.35, 1 - excess * UNDERSTEER_STEER_LOSS);
+      this.speed = Math.max(0, this.speed - UNDERSTEER_SCRUB * excess * dt);
+    }
+    // visual yaw eases in and out
+    const yawTarget = this.drifting ? this.driftAngle : 0;
+    this.driftYaw += (yawTarget - this.driftYaw) * Math.min(1, dt * 8);
+
+    // ----- lateral -----
+    const lat = dt * (0.5 + 1.9 * speedPct) * steerAuth * latGain;
+    this.playerX += steer * lat;
+    this.playerX -= dt * speedPct * speedPct * curve * curvePush;
+    let squeal = 0;
+    if (this.drifting) squeal = 0.7 + 0.3 * speedPct;
+    else if (this.understeer > 0.03) squeal = Math.min(1, 0.3 + this.understeer * 2.5);
+    else if (brake && speedPct > 0.45 && !offroad) squeal = 0.35;
     this.audio.setSqueal(racing ? squeal : 0);
     this.audio.setOffroad(this.offroad ? speedPct : 0);
     this.bounce = this.offroad ? Math.round((Math.random() * 2 - 1) * (1 + speedPct * 2)) : 0;
@@ -248,6 +340,8 @@ class Game {
         if (!s.collide) continue;
         if (Math.abs(this.playerX - s.x) < s.hw + CAR_HW) {
           const strength = clamp(speedPct, 0.3, 1);
+          this.driftClean = false;
+          if (this.drifting) this.endDrift(false);
           this.speed = Math.min(this.speed, MAX_SPEED * 0.12);
           this.playerX = s.x - Math.sign(s.x) * (s.hw + CAR_HW + 0.05);
           this.renderer.addShake(4 + strength * 5);
@@ -321,18 +415,41 @@ class Game {
   }
 
   autopilot(seg, speedPct) {
-    // look a little ahead for the curve to cut inside and slow down for
+    // look a little ahead for the curve to cut inside, brake to the grip speed
     const segs = this.track.segments, N = segs.length;
     let ahead = 0;
     for (let k = 4; k < 24; k++) ahead += segs[(seg.index + k) % N].curve;
     ahead /= 20;
     const targetX = -Math.sign(ahead) * Math.min(0.45, Math.abs(ahead) * 0.12);
     const steer = clamp((targetX - this.playerX) * 3 + seg.curve * 0.35 * speedPct, -1, 1);
-    const lim = 1.02 - Math.min(0.5, Math.abs(ahead) * 0.075);
-    return { steer, gas: speedPct < lim, brake: speedPct > lim + 0.08 };
+    const lim = Math.min(this.gripAt[seg.index], this.gripAt[(seg.index + 10) % N]) + 0.03;
+    return { steer, gas: speedPct < lim, brake: speedPct > lim + 0.04 };
+  }
+
+  startDrift(dir) {
+    this.drifting = true;
+    this.driftDir = dir;
+    this.driftAngle = dir * 0.3;
+    this.driftTime = 0;
+    this.driftClean = true;
+    vibrate(20);
+  }
+  // clean: exited by easing off (not by running out of speed / road / into something)
+  endDrift(clean) {
+    if (!this.drifting) return;
+    this.drifting = false;
+    this.driftCooldown = 0.35;
+    if (clean && this.driftClean && this.driftTime >= DRIFT_REWARD_MIN) {
+      const gain = Math.min(DRIFT_REWARD_MAX, this.driftTime * DRIFT_REWARD_RATE);
+      this.turbo = Math.min(1, this.turbo + gain);
+      this.message('DRIFT +TURBO', 1.4, PAL.ORANGE, 'drift');
+      this.audio.blip();
+    }
   }
 
   barrierHit(limit, tunnel) {
+    this.driftClean = false;
+    if (this.drifting) this.endDrift(false);
     this.playerX = limit - Math.sign(limit) * 0.03;
     this.speed = Math.max(0, this.speed - 2600 * 0.016 * 4);
     if (Math.random() < 0.3) { this.audio.scrape(); this.renderer.addShake(1.5); }
@@ -392,10 +509,9 @@ class Game {
     const racing = this.state === 'racing';
     for (const car of this.cars) {
       const seg = track.findSegment(car.z);
-      // corner speed: look ahead
-      let curv = 0;
-      for (let k = 1; k < 18; k++) curv = Math.max(curv, Math.abs(segs[(seg.index + k) % N].curve));
-      let target = Math.min(car.maxSpeed, MAX_SPEED * (1.05 - Math.min(0.62, curv * 0.072)));
+      // corner speed: brake to the grip speed (a little more tolerant than the player, and earlier)
+      const grip = Math.min(this.gripAt[seg.index], this.gripAt[(seg.index + AI_LOOKAHEAD) % N]);
+      let target = Math.min(car.maxSpeed, MAX_SPEED * Math.min(1.05, grip + AI_GRIP_BONUS));
       if (this.state === 'countdown') target = 0;
       // rubber band so the pack stays close
       const gap = (car.dist - pd) / SEG_LENGTH;
@@ -404,7 +520,7 @@ class Game {
         else if (gap > 50) target *= 0.88;
       }
       if (car.speed < target) car.speed = Math.min(target, car.speed + 3200 * dt);
-      else car.speed = Math.max(target, car.speed - 5200 * dt);
+      else car.speed = Math.max(target, car.speed - 6000 * dt);
       // lane choice
       car.laneTimer -= dt;
       if (car.laneTimer <= 0) { car.laneTimer = 4 + Math.random() * 6; car.lane = [-0.5, -0.15, 0.15, 0.5][Math.floor(Math.random() * 4)]; }
@@ -459,6 +575,7 @@ class Game {
       if (Math.abs(dx) >= CAR_HW * 2) continue;
       if (d > 0 && this.speed > car.speed) {
         // rear-ended them
+        this.driftClean = false;
         const delta = (this.speed - car.speed) / MAX_SPEED;
         this.speed = Math.max(car.speed * 0.85 - 300, 0);
         car.speed = Math.min(MAX_SPEED, car.speed + 600);
@@ -503,49 +620,70 @@ class Game {
   }
 
   drawHUD(ctx, r) {
-    const W = r.W, sceneH = r.sceneH;
-    const s = W >= 400 ? 2 : (W >= 260 ? 2 : 1);
+    const W = r.W, H = r.H, sceneH = r.sceneH;
+    const s = W >= 260 ? 2 : 1;
     const pad = 4, topY = 4;
-    // top bar background
-    ctx.fillStyle = 'rgba(8,8,24,0.55)';
-    ctx.fillRect(0, 0, W, 16 * s + 12);
-    // lap + position (left column; the top-right corner is reserved for the pause/mute buttons)
-    Font.draw(ctx, 'LAP', pad, topY + 2, { color: PAL.GRAY, scale: 1 });
-    Font.draw(ctx, this.lap + '/' + this.laps, pad + 20, topY, { color: PAL.WHITE, scale: s, shadow: PAL.BLACK });
+    const landscape = r.dashH === 0;
     const rank = this.state === 'finished' ? this.finishRank : this.rank();
-    const posTxt = ordinal(rank);
+    const kmh = Math.round(this.speed / MAX_SPEED * 300);
+    const g = this.gearInfo();
+    const lapTxt = this.lap + '/' + this.laps, posTxt = ordinal(rank);
+    const timeTxt = fmtTime(this.raceTime - this.lapStart), bestTxt = 'BEST ' + fmtTime(this.best);
+    if (landscape) {
+      // ---- corners: lap/pos top-left, time top-centre, speed cluster around the car at the bottom ----
+      ctx.fillStyle = 'rgba(8,8,24,0.55)';
+      ctx.fillRect(0, 0, 24 + Font.width('1/3', s) + 8, 16 * s + 12);
+      const tw = Math.max(Font.width(timeTxt, s), Font.width(bestTxt, 1)) + 16;
+      ctx.fillRect(Math.round(W / 2 - tw / 2), 0, tw, 16 * s + 12);
+    } else {
+      ctx.fillStyle = 'rgba(8,8,24,0.55)';
+      ctx.fillRect(0, 0, W, 16 * s + 12);
+    }
+    // lap + position (left column; the top-right corner is reserved for the pause/radio/mute buttons)
+    Font.draw(ctx, 'LAP', pad, topY + 2, { color: PAL.GRAY, scale: 1 });
+    Font.draw(ctx, lapTxt, pad + 20, topY, { color: PAL.WHITE, scale: s, shadow: PAL.BLACK });
     Font.draw(ctx, 'POS', pad, topY + 8 * s + 5, { color: PAL.GRAY, scale: 1 });
     Font.draw(ctx, posTxt, pad + 20, topY + 8 * s + 3, { color: rank === 1 ? PAL.YELLOW : PAL.WHITE, scale: s, shadow: PAL.BLACK });
     // time (centre)
-    const tcx = Math.round(W * 0.56);
-    Font.draw(ctx, fmtTime(this.raceTime - this.lapStart), tcx, topY, { color: PAL.CYAN, scale: s, align: 'center', shadow: PAL.BLACK });
-    Font.draw(ctx, 'BEST ' + fmtTime(this.best), tcx, topY + 8 * s + 5, { color: PAL.GRAY, scale: 1, align: 'center' });
+    const tcx = Math.round(W * 0.5);
+    Font.draw(ctx, timeTxt, tcx, topY, { color: PAL.CYAN, scale: s, align: 'center', shadow: PAL.BLACK });
+    Font.draw(ctx, bestTxt, tcx, topY + 8 * s + 5, { color: PAL.GRAY, scale: 1, align: 'center' });
     // ----- speed / gear / turbo -----
-    // portrait: a strip at the top of the dashboard; landscape: bottom-left corner
-    const dashTop = r.dashH > 0 ? sceneH + 6 : r.H - 72;
-    const cx = r.dashH > 0 ? W / 2 : 72;
-    if (r.dashH === 0) { ctx.fillStyle = 'rgba(8,8,24,0.55)'; ctx.fillRect(cx - 64, dashTop - 4, 140, 32); }
-    const kmh = Math.round(this.speed / MAX_SPEED * 300);
-    const g = this.gearInfo();
-    Font.draw(ctx, String(kmh), cx - 8, dashTop, { color: this.turboActive ? PAL.ORANGE : PAL.WHITE, scale: 3, align: 'right', shadow: PAL.BLACK });
-    Font.draw(ctx, 'KM/H', cx - 8, dashTop + 22, { color: PAL.GRAY, scale: 1, align: 'right' });
+    let dashTop, sx, gx, tx, tw;
+    if (landscape) {
+      // either side of the player car, just above the bottom edge
+      const carHW = Math.round(18 * r.playerScale * r.roadWidth * r.f * SPRITE_UNIT);
+      dashTop = H - 38;
+      sx = Math.round(W / 2 - carHW - 10);
+      gx = Math.round(W / 2 + carHW + 10);
+      tx = gx + 28; tw = 60;
+      ctx.fillStyle = 'rgba(8,8,24,0.5)';
+      ctx.fillRect(sx - 70, dashTop - 4, 74, 32);
+      ctx.fillRect(gx - 4, dashTop - 4, tw + 36, 32);
+    } else {
+      dashTop = sceneH + 6;
+      sx = Math.round(W / 2) - 8; gx = Math.round(W / 2);
+      tx = gx + 28; tw = Math.min(70, W / 2 - 34);
+    }
+    const speedCol = this.turboActive ? PAL.ORANGE : (this.understeer > 0.03 ? PAL.RED : PAL.WHITE);
+    Font.draw(ctx, String(kmh), sx, dashTop, { color: speedCol, scale: 3, align: 'right', shadow: PAL.BLACK });
+    Font.draw(ctx, 'KM/H', sx, dashTop + 22, { color: PAL.GRAY, scale: 1, align: 'right' });
     // gear box
-    ctx.fillStyle = PAL.PANEL; ctx.fillRect(cx, dashTop - 1, 22, 22);
-    ctx.fillStyle = g.rpm > 0.9 ? PAL.RED : PAL.WHITE; ctx.fillRect(cx, dashTop - 1, 22, 1); ctx.fillRect(cx, dashTop + 20, 22, 1);
-    Font.draw(ctx, String(g.gear), cx + 11, dashTop + 2, { color: g.rpm > 0.9 ? PAL.RED : PAL.YELLOW, scale: 2, align: 'center' });
+    ctx.fillStyle = PAL.PANEL; ctx.fillRect(gx, dashTop - 1, 22, 22);
+    ctx.fillStyle = g.rpm > 0.9 ? PAL.RED : PAL.WHITE; ctx.fillRect(gx, dashTop - 1, 22, 1); ctx.fillRect(gx, dashTop + 20, 22, 1);
+    Font.draw(ctx, String(g.gear), gx + 11, dashTop + 2, { color: g.rpm > 0.9 ? PAL.RED : PAL.YELLOW, scale: 2, align: 'center' });
     // rpm bar under gear
-    ctx.fillStyle = '#303050'; ctx.fillRect(cx, dashTop + 23, 22, 3);
-    ctx.fillStyle = g.rpm > 0.9 ? PAL.RED : PAL.GREEN; ctx.fillRect(cx, dashTop + 23, Math.round(22 * g.rpm), 3);
+    ctx.fillStyle = '#303050'; ctx.fillRect(gx, dashTop + 23, 22, 3);
+    ctx.fillStyle = g.rpm > 0.9 ? PAL.RED : PAL.GREEN; ctx.fillRect(gx, dashTop + 23, Math.round(22 * g.rpm), 3);
     // turbo meter
-    const tx = cx + 28, tw = Math.min(70, W / 2 - 34);
-    Font.draw(ctx, 'TURBO', tx, dashTop - 1, { color: this.turboActive ? PAL.ORANGE : PAL.GRAY, scale: 1 });
+    Font.draw(ctx, this.drifting ? 'DRIFT' : 'TURBO', tx, dashTop - 1, { color: this.drifting ? PAL.ORANGE : (this.turboActive ? PAL.ORANGE : PAL.GRAY), scale: 1 });
     ctx.fillStyle = '#303050'; ctx.fillRect(tx, dashTop + 8, tw, 8);
     const fill = Math.round((tw - 2) * this.turbo);
     ctx.fillStyle = this.turboActive ? PAL.ORANGE : (this.turbo < 0.12 ? PAL.RED : PAL.CYAN);
     for (let i = 0; i < fill; i += 4) ctx.fillRect(tx + 1 + i, dashTop + 9, Math.min(3, fill - i), 6);
     ctx.fillStyle = PAL.WHITE; ctx.fillRect(tx, dashTop + 8, tw, 1); ctx.fillRect(tx, dashTop + 15, tw, 1);
-    // lap times (dash only)
-    if (r.dashH > 0) {
+    // lap times (portrait dash only)
+    if (!landscape) {
       let y = dashTop + 34;
       for (let i = 0; i < this.lapTimes.length && i < 3; i++) {
         Font.draw(ctx, 'LAP ' + (i + 1) + '  ' + fmtTime(this.lapTimes[i]), 6, y, { color: this.lapTimes[i] === this.best ? PAL.CYAN : PAL.GRAY, scale: 1 });
@@ -579,6 +717,7 @@ class Game {
   drawTitle(ctx, r) {
     const W = r.W, H = r.H, sceneH = r.sceneH;
     const blink = Math.floor(this.time * 2) % 2 === 0;
+    const landscape = r.dashH === 0;
     const big = Math.max(3, Math.min(7, Math.floor(W / 46)));
     const ly = Math.round(sceneH * 0.08);
     // logo backing
@@ -590,15 +729,91 @@ class Game {
     Font.draw(ctx, 'MONACO', W / 2, ly + 4, { color: PAL.YELLOW, scale: big, align: 'center', outline: PAL.BLACK });
     Font.draw(ctx, 'G T', W / 2, ly + 8 + big * 7, { color: PAL.WHITE, scale: Math.max(2, big - 3), align: 'center', outline: PAL.BLACK });
     Font.draw(ctx, this.trackDef.subtitle, W / 2, ly + big * 7 + 12 + Math.max(2, big - 3) * 7, { color: PAL.CYAN, scale: 1, align: 'center', shadow: PAL.BLACK });
-    // prompt area: dash in portrait, lower scene in landscape
-    const py = r.dashH > 0 ? sceneH + Math.round(r.dashH * 0.18) : Math.round(sceneH * 0.5);
-    if (blink) Font.draw(ctx, 'TAP TO START', W / 2, py, { color: PAL.WHITE, scale: 2, align: 'center', outline: PAL.BLACK });
-    Font.draw(ctx, 'BEST LAP ' + fmtTime(this.best), W / 2, py + 22, { color: PAL.YELLOW, scale: 1, align: 'center', shadow: PAL.BLACK });
-    Font.draw(ctx, this.laps + ' LAPS  -  ' + (this.cars.length + 1) + ' CARS', W / 2, py + 33, { color: PAL.GRAY, scale: 1, align: 'center', shadow: PAL.BLACK });
-    const hy = r.dashH > 0 ? H - 34 : sceneH - 36;
-    Font.draw(ctx, 'LEFT: DRAG TO STEER   RIGHT: GAS BRAKE TURBO', W / 2, hy, { color: PAL.GRAY, scale: 1, align: 'center', shadow: PAL.BLACK });
-    Font.draw(ctx, 'KEYS: ARROWS/WASD  SHIFT=TURBO  P=PAUSE  M=MUTE', W / 2, hy + 10, { color: PAL.GRAY, scale: 1, align: 'center', shadow: PAL.BLACK });
-    Font.draw(ctx, '16-BIT ARCADE RACING', W / 2, hy + 21, { color: '#6060a0', scale: 1, align: 'center' });
+    this.tunerRects.length = 0;
+    if (landscape) {
+      // prompt on the left, radio tuner on the right, hints along the bottom
+      const px = Math.round(W * 0.28), py = Math.round(sceneH * 0.5);
+      if (blink) Font.draw(ctx, 'TAP TO START', px, py, { color: PAL.WHITE, scale: 2, align: 'center', outline: PAL.BLACK });
+      Font.draw(ctx, 'BEST LAP ' + fmtTime(this.best), px, py + 22, { color: PAL.YELLOW, scale: 1, align: 'center', shadow: PAL.BLACK });
+      Font.draw(ctx, this.laps + ' LAPS  -  ' + (this.cars.length + 1) + ' CARS', px, py + 33, { color: PAL.GRAY, scale: 1, align: 'center', shadow: PAL.BLACK });
+      const rw = Math.min(200, Math.round(W * 0.36)), rh = 60;
+      this.drawRadio(ctx, r, Math.round(W * 0.72 - rw / 2), py - 8, rw, rh);
+      const hy = H - 24;
+      Font.draw(ctx, 'LEFT: DRAG TO STEER   RIGHT: GAS BRAKE TURBO   BRAKE+STEER TO DRIFT', W / 2, hy, { color: PAL.GRAY, scale: 1, align: 'center', shadow: PAL.BLACK });
+      Font.draw(ctx, 'KEYS: ARROWS/WASD  SHIFT=TURBO  R=RADIO  P=PAUSE  M=MUTE', W / 2, hy + 10, { color: PAL.GRAY, scale: 1, align: 'center', shadow: PAL.BLACK });
+    } else {
+      // portrait: everything lives in the dashboard under the scene
+      const py = sceneH + Math.round(r.dashH * 0.14);
+      if (blink) Font.draw(ctx, 'TAP TO START', W / 2, py, { color: PAL.WHITE, scale: 2, align: 'center', outline: PAL.BLACK });
+      Font.draw(ctx, 'BEST LAP ' + fmtTime(this.best), W / 2, py + 22, { color: PAL.YELLOW, scale: 1, align: 'center', shadow: PAL.BLACK });
+      Font.draw(ctx, this.laps + ' LAPS  -  ' + (this.cars.length + 1) + ' CARS', W / 2, py + 33, { color: PAL.GRAY, scale: 1, align: 'center', shadow: PAL.BLACK });
+      const rw = Math.min(210, W - 24), rh = 60;
+      this.drawRadio(ctx, r, Math.round(W / 2 - rw / 2), py + 50, rw, rh);
+      // rotate hint (Safari can't lock orientation; the Home Screen app does)
+      const ry = py + 50 + rh + 18, hint = 'ROTATE FOR BEST EXPERIENCE', hc = blink ? PAL.YELLOW : '#a08010';
+      const hx = Math.round(W / 2 - Font.width(hint, 1) / 2 + 13);
+      // tiny phone icon: upright -> sideways
+      ctx.fillStyle = hc; ctx.fillRect(hx - 26, ry - 1, 7, 11); ctx.fillStyle = PAL.DARK; ctx.fillRect(hx - 25, ry + 1, 5, 7);
+      ctx.fillStyle = hc; ctx.fillRect(hx - 16, ry + 1, 11, 7); ctx.fillStyle = PAL.DARK; ctx.fillRect(hx - 14, ry + 2, 7, 5);
+      Font.draw(ctx, hint, hx, ry + 1, { color: hc, scale: 1 });
+      const hy = H - 34;
+      Font.draw(ctx, 'LEFT: DRAG TO STEER   RIGHT: GAS BRAKE TURBO', W / 2, hy, { color: PAL.GRAY, scale: 1, align: 'center', shadow: PAL.BLACK });
+      Font.draw(ctx, 'BRAKE+STEER TO DRIFT   R=RADIO  P=PAUSE  M=MUTE', W / 2, hy + 10, { color: PAL.GRAY, scale: 1, align: 'center', shadow: PAL.BLACK });
+      Font.draw(ctx, '16-BIT ARCADE RACING', W / 2, hy + 21, { color: '#6060a0', scale: 1, align: 'center' });
+    }
+  }
+
+  // Pixel-art car radio: speaker grille, amber display with station name /
+  // frequency and a bouncing EQ, < > buttons. Registers tap rects.
+  drawRadio(ctx, r, x, y, w, h) {
+    const a = this.audio, st = a.stationInfo();
+    const off = !!st.off;
+    // body
+    ctx.fillStyle = '#1a1a26'; ctx.fillRect(x + 1, y + 1, w, h);
+    ctx.fillStyle = '#3c3c50'; ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = '#20202c'; ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+    ctx.fillStyle = '#5c5c78'; ctx.fillRect(x, y, w, 1); ctx.fillRect(x, y, 1, h);
+    ctx.fillStyle = '#101018'; ctx.fillRect(x, y + h - 1, w, 1); ctx.fillRect(x + w - 1, y, 1, h);
+    // speaker grille on the left
+    ctx.fillStyle = '#0c0c14';
+    for (let gy = y + 8; gy < y + h - 8; gy += 3) for (let gx = x + 7; gx < x + 27; gx += 3) ctx.fillRect(gx, gy, 2, 2);
+    // buttons
+    const bw = 16, bh = 22, by = y + Math.round(h / 2 - bh / 2);
+    const lx = x + 32, rx = x + w - 6 - bw;
+    for (const [bx, txt, act] of [[lx, '<', () => this.prevStation()], [rx, '>', () => this.nextStation()]]) {
+      ctx.fillStyle = '#101018'; ctx.fillRect(bx + 1, by + 1, bw, bh);
+      ctx.fillStyle = '#6a6a88'; ctx.fillRect(bx, by, bw, bh);
+      ctx.fillStyle = '#4a4a64'; ctx.fillRect(bx + 1, by + 1, bw - 2, bh - 2);
+      ctx.fillStyle = '#7c7c9c'; ctx.fillRect(bx + 1, by + 1, bw - 2, 1);
+      Font.draw(ctx, txt, bx + bw / 2, by + 7, { color: PAL.WHITE, scale: 1, align: 'center' });
+      this.tunerRects.push({ x: bx - 8, y: y, w: bw + 16, h: h, action: act });
+    }
+    // display
+    const dx = lx + bw + 5, dw = rx - 5 - dx, dy = y + 8, dh = h - 16;
+    ctx.fillStyle = '#080808'; ctx.fillRect(dx - 1, dy - 1, dw + 2, dh + 2);
+    ctx.fillStyle = off ? '#1a1410' : '#3a2408'; ctx.fillRect(dx, dy, dw, dh);
+    if (!off) { ctx.fillStyle = '#4a3010'; for (let gy = dy; gy < dy + dh; gy += 2) ctx.fillRect(dx, gy, dw, 1); }
+    const amber = off ? '#5a4020' : PAL.ORANGE, dim = off ? '#3a2c18' : '#c07020';
+    Font.draw(ctx, off ? '---.-' : st.freq, dx + 4, dy + 4, { color: amber, scale: 2 });
+    Font.draw(ctx, 'FM', dx + 4 + Font.width(st.freq, 2) + 6, dy + 11, { color: dim, scale: 1 });
+    Font.draw(ctx, st.name, dx + 4, dy + dh - 10, { color: amber, scale: 1 });
+    // EQ bars, right side of the display
+    const bars = 7, ex = dx + dw - 4 - bars * 4, eh = dh - 8;
+    const phase = a.beatPhase();
+    const playing = !off && a.musicOn;
+    for (let i = 0; i < bars; i++) {
+      let lv = 0;
+      if (playing) lv = clamp(0.25 + 0.45 * Math.abs(Math.sin(this.time * (2.2 + i * 0.57) + i * 1.9)) + 0.4 * (1 - phase) * (i % 2 ? 0.6 : 1), 0.08, 1);
+      else if (!off) lv = 0.08;
+      const hh = Math.max(1, Math.round(lv * eh));
+      for (let k = 0; k < hh; k += 2) {
+        ctx.fillStyle = k > eh * 0.7 ? PAL.RED : (k > eh * 0.4 ? PAL.YELLOW : PAL.GREEN);
+        ctx.fillRect(ex + i * 4, dy + dh - 4 - k - 1, 3, 1);
+      }
+    }
+    // the display itself cycles stations too
+    this.tunerRects.push({ x: dx, y: dy, w: dw, h: dh, action: () => this.nextStation() });
+    Font.draw(ctx, 'RADIO', x + w / 2, y + h + 4, { color: '#6060a0', scale: 1, align: 'center' });
   }
 
   drawPauseMenu(ctx, r) {
@@ -608,6 +823,7 @@ class Game {
       ['RESUME', () => this.resumeRace()],
       ['RESTART', () => { this.startRace(); }],
       ['SOUND: ' + (this.audio.muted ? 'OFF' : 'ON'), () => this.toggleMute()],
+      ['RADIO: ' + (this.audio.stationInfo().off ? 'OFF' : this.audio.stationInfo().name), () => this.nextStation()],
       ['CRT: ' + (this.crt ? 'ON' : 'OFF'), () => this.toggleCrt()],
       ['QUIT TO TITLE', () => this.toTitle()],
     ];

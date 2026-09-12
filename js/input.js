@@ -29,6 +29,7 @@ class Input {
       pedalZone: document.getElementById('pedal-zone'),
       pause: document.getElementById('btn-pause'),
       mute: document.getElementById('btn-mute'),
+      radio: document.getElementById('btn-radio'),
     };
     this._bind();
   }
@@ -137,19 +138,30 @@ class Input {
         case 'Escape': case 'KeyP': this.game.onPause(); break;
         case 'KeyM': this.game.toggleMute(); break;
         case 'KeyC': this.game.toggleCrt(); break;
+        case 'KeyR': this.game.nextStation(); break;
         default: break;
       }
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
       this._recompute();
     });
     window.addEventListener('keyup', e => { this.keys[e.code] = false; this._recompute(); });
-    window.addEventListener('blur', () => { this.keys = {}; this.pedalTouches = {}; this.touchSteer = null; this._setSteer(0); updatePedals(); });
+    this._updatePedals = updatePedals;
+    window.addEventListener('blur', () => this.reset());
 
     // --- small buttons ---
     el.pause.addEventListener('click', e => { e.stopPropagation(); this.game.onPause(); });
     el.mute.addEventListener('click', e => { e.stopPropagation(); this.game.toggleMute(); });
-    el.pause.addEventListener('touchstart', e => { e.stopPropagation(); }, { passive: true });
-    el.mute.addEventListener('touchstart', e => { e.stopPropagation(); }, { passive: true });
+    el.radio.addEventListener('click', e => { e.stopPropagation(); this.game.nextStation(); });
+    for (const b of [el.pause, el.mute, el.radio]) b.addEventListener('touchstart', e => { e.stopPropagation(); this.game.userGesture(); }, { passive: true });
+  }
+
+  // Drop every active touch/key (rotation, focus loss): nothing may stay stuck down.
+  reset() {
+    this.keys = {};
+    this.pedalTouches = {};
+    this.touchSteer = null;
+    this._setSteer(0);
+    this._updatePedals();
   }
 
   _tap(clientX, clientY) {
@@ -179,6 +191,8 @@ class Input {
   }
 
   showControls(show) { this.el.controls.classList.toggle('hidden', !show); this.el.pause.classList.toggle('hidden', !show); }
+  showPads(show) { this.el.controls.classList.toggle('hidden', !show); }
   setTurboEmpty(empty) { this.el.turbo.classList.toggle('empty', empty); }
   setMuteIcon(muted) { this.el.mute.classList.toggle('off', muted); }
+  setRadioIcon(off) { this.el.radio.classList.toggle('off', off); }
 }

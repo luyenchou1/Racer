@@ -6,7 +6,7 @@
   const canvas = document.getElementById('screen');
   const renderer = new Renderer(canvas);
   const audio = new AudioEngine();
-  const game = { renderer, userGesture() {}, onTap() {}, onConfirm() {}, onPause() {}, toggleMute() {}, toggleCrt() {} };
+  const game = { renderer, userGesture() {}, onTap() {}, onConfirm() {}, onPause() {}, toggleMute() {}, toggleCrt() {}, nextStation() {} };
   const input = new Input(game);
   const real = new Game(renderer, audio, input);
   input.game = real;
@@ -17,7 +17,8 @@
   const refit = () => {
     clearTimeout(fitTimer);
     renderer.fit();
-    fitTimer = setTimeout(() => renderer.fit(), 350);
+    input.reset(); // the DOM zones move: never leave a thumb "held down"
+    fitTimer = setTimeout(() => { renderer.fit(); input.reset(); }, 350);
   };
   window.addEventListener('resize', refit);
   window.addEventListener('orientationchange', refit);
