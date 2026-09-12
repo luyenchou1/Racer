@@ -1,29 +1,29 @@
 /**
- * Monaco GT Racer - 16-Bit Style Pseudo-3D Renderer
- * Classic OutRun-style road rendering
+ * Monaco GT Racer - Advanced Pseudo-3D Renderer
+ * Smooth 16-bit style graphics with particle effects
  */
 
 class Renderer {
     constructor(canvas) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
-
-        // Rendering settings
         this.width = 0;
         this.height = 0;
-        this.resolution = 1; // Lower for more pixelated look
 
-        // Camera settings
-        this.cameraHeight = 1000;
-        this.cameraDepth = 0.84; // Camera depth (affects FOV)
-        this.drawDistance = 300; // Number of segments to draw
+        // Camera
+        this.cameraHeight = 1200;
+        this.cameraDepth = 0.8;
+        this.drawDistance = 250;
 
-        // Player view position
-        this.playerX = 0;
-        this.playerZ = 0;
+        // Particles
+        this.particles = [];
+        this.maxParticles = 50;
 
-        // Road projection cache
-        this.projectedSegments = [];
+        // Sky gradient cache
+        this.skyGradient = null;
+
+        // Projected segments cache
+        this.projected = [];
     }
 
     init() {
@@ -32,490 +32,525 @@ class Renderer {
     }
 
     resize() {
-        // Get container size
-        const container = this.canvas.parentElement;
-        const rect = container.getBoundingClientRect();
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const rect = this.canvas.parentElement.getBoundingClientRect();
 
-        // Set canvas size with resolution scaling
-        this.width = Math.floor(rect.width * this.resolution);
-        this.height = Math.floor(rect.height * this.resolution);
+        this.width = Math.floor(rect.width * dpr);
+        this.height = Math.floor(rect.height * dpr);
 
         this.canvas.width = this.width;
         this.canvas.height = this.height;
 
-        // Pixelated rendering
         this.ctx.imageSmoothingEnabled = false;
+        this.skyGradient = null;
     }
 
-    render(gameState) {
-        const { playerZ, playerX, speed } = gameState;
+    render(state) {
+        const ctx = this.ctx;
 
-        this.playerZ = playerZ;
-        this.playerX = playerX;
+        // Clear
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, this.width, this.height);
 
-        // Clear canvas
-        this.ctx.fillStyle = '#000';
-        this.ctx.fillRect(0, 0, this.width, this.height);
+        // Sky
+        this.drawSky(state);
 
-        // Draw sky
-        this.drawSky(gameState);
+        // Horizon
+        this.drawHorizon(state);
 
-        // Draw mountains/horizon
-        this.drawHorizon(gameState);
+        // Road
+        this.drawRoad(state);
 
-        // Draw road segments
-        this.drawRoad(gameState);
+        // Particles
+        this.drawParticles(state);
 
-        // Draw player car at the bottom
-        this.drawPlayerCar(gameState);
+        // Player car
+        this.drawPlayerCar(state);
 
-        // Apply CRT/retro effect
-        this.applyRetroEffect();
+        // HUD elements drawn on canvas
+        this.drawTurboMeter(state);
+
+        // Retro effects
+        this.drawRetroEffects();
     }
 
-    drawSky(gameState) {
-        const colors = track.colors.sky;
-        const horizonY = this.height * 0.4;
+    drawSky(state) {
+        const ctx = this.ctx;
+        const horizonY = this.height * 0.38;
 
-        // Gradient sky
-        const gradient = this.ctx.createLinearGradient(0, 0, 0, horizonY);
-        gradient.addColorStop(0, colors.top);
-        gradient.addColorStop(1, colors.bottom);
+        // Create gradient if needed
+        if (!this.skyGradient) {
+            this.skyGradient = ctx.createLinearGradient(0, 0, 0, horizonY);
+            this.skyGradient.addColorStop(0, '#0a0a2e');
+            this.skyGradient.addColorStop(0.5, '#1a2a5e');
+            this.skyGradient.addColorStop(1, '#2a4a7e');
+        }
 
-        this.ctx.fillStyle = gradient;
-        this.ctx.fillRect(0, 0, this.width, horizonY);
+        ctx.fillStyle = this.skyGradient;
+        ctx.fillRect(0, 0, this.width, horizonY);
 
         // Sun
-        const sunX = this.width * 0.75;
-        const sunY = this.height * 0.15;
-        const sunRadius = 30;
-
-        this.ctx.fillStyle = '#FFD700';
-        this.ctx.beginPath();
-        this.ctx.arc(sunX, sunY, sunRadius, 0, Math.PI * 2);
-        this.ctx.fill();
+        const sunX = this.width * 0.8;
+        const sunY = this.height * 0.12;
 
         // Sun glow
-        this.ctx.fillStyle = 'rgba(255, 200, 0, 0.3)';
-        this.ctx.beginPath();
-        this.ctx.arc(sunX, sunY, sunRadius * 2, 0, Math.PI * 2);
-        this.ctx.fill();
+        const glowGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 60);
+        glowGrad.addColorStop(0, 'rgba(255,220,100,0.8)');
+        glowGrad.addColorStop(0.3, 'rgba(255,180,50,0.4)');
+        glowGrad.addColorStop(1, 'rgba(255,100,0,0)');
+        ctx.fillStyle = glowGrad;
+        ctx.fillRect(sunX - 80, sunY - 80, 160, 160);
 
-        // Clouds (simple pixel-style)
-        this.drawClouds(gameState.playerZ);
+        // Sun disc
+        ctx.fillStyle = '#FFD700';
+        ctx.beginPath();
+        ctx.arc(sunX, sunY, 25, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Clouds
+        this.drawClouds(state.playerZ);
     }
 
     drawClouds(offset) {
-        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        const ctx = this.ctx;
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
 
-        const cloudPositions = [
-            { x: 0.1, y: 0.08, w: 60, h: 20 },
-            { x: 0.3, y: 0.12, w: 80, h: 24 },
-            { x: 0.5, y: 0.06, w: 50, h: 16 },
-            { x: 0.8, y: 0.1, w: 70, h: 22 },
+        const clouds = [
+            { x: 0.1, y: 0.06, w: 80, h: 25 },
+            { x: 0.35, y: 0.1, w: 100, h: 30 },
+            { x: 0.6, y: 0.05, w: 70, h: 22 },
+            { x: 0.85, y: 0.08, w: 90, h: 28 }
         ];
 
-        cloudPositions.forEach(cloud => {
-            // Slight parallax
-            const parallaxOffset = (offset * 0.0001) % 1;
-            let x = ((cloud.x + parallaxOffset) % 1.2) * this.width - 50;
+        clouds.forEach(c => {
+            const parallax = (offset * 0.00005) % 1.3;
+            let x = ((c.x + parallax) % 1.3) * this.width - 100;
 
-            this.ctx.fillRect(x, cloud.y * this.height, cloud.w, cloud.h);
-            this.ctx.fillRect(x + 10, cloud.y * this.height - 8, cloud.w - 20, 12);
-            this.ctx.fillRect(x - 10, cloud.y * this.height + 8, cloud.w - 10, 10);
+            // Cloud shape
+            ctx.fillRect(x, c.y * this.height, c.w, c.h);
+            ctx.fillRect(x + c.w * 0.15, c.y * this.height - c.h * 0.4, c.w * 0.7, c.h * 0.6);
+            ctx.fillRect(x - c.w * 0.1, c.y * this.height + c.h * 0.3, c.w * 0.8, c.h * 0.5);
         });
     }
 
-    drawHorizon(gameState) {
-        const horizonY = this.height * 0.4;
-        const mountainHeight = this.height * 0.15;
+    drawHorizon(state) {
+        const ctx = this.ctx;
+        const horizonY = this.height * 0.38;
 
         // Mountains
-        this.ctx.fillStyle = track.colors.mountains;
+        ctx.fillStyle = '#1a3a5e';
+        ctx.beginPath();
+        ctx.moveTo(0, horizonY);
 
-        // Draw jagged mountain silhouette
-        this.ctx.beginPath();
-        this.ctx.moveTo(0, horizonY);
-
-        const peaks = 12;
+        const peaks = 15;
         for (let i = 0; i <= peaks; i++) {
             const x = (i / peaks) * this.width;
-            const peakHeight = Math.sin(i * 1.5 + gameState.playerZ * 0.0001) * mountainHeight * 0.5;
-            const y = horizonY - mountainHeight * 0.5 - peakHeight;
+            const h = Math.sin(i * 1.7 + state.playerZ * 0.00008) * this.height * 0.08;
+            const y = horizonY - this.height * 0.06 - Math.abs(h);
 
-            if (i === 0) {
-                this.ctx.lineTo(x, y);
-            } else {
-                // Jagged peaks
+            if (i === 0) ctx.lineTo(x, y);
+            else {
                 const midX = x - this.width / peaks / 2;
-                const midY = horizonY - mountainHeight * 0.3;
-                this.ctx.lineTo(midX, midY);
-                this.ctx.lineTo(x, y);
+                const midY = horizonY - this.height * 0.03;
+                ctx.lineTo(midX, midY);
+                ctx.lineTo(x, y);
             }
         }
+        ctx.lineTo(this.width, horizonY);
+        ctx.closePath();
+        ctx.fill();
 
-        this.ctx.lineTo(this.width, horizonY);
-        this.ctx.closePath();
-        this.ctx.fill();
-
-        // Sea/water between mountains and road
-        const seaHeight = this.height * 0.05;
-        this.ctx.fillStyle = track.colors.sea;
-        this.ctx.fillRect(0, horizonY, this.width, seaHeight);
+        // Sea
+        const seaH = this.height * 0.04;
+        ctx.fillStyle = '#0a3a5e';
+        ctx.fillRect(0, horizonY, this.width, seaH);
 
         // Water shimmer
-        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
-        for (let x = 0; x < this.width; x += 20) {
-            const shimmerOffset = Math.sin(x * 0.1 + gameState.playerZ * 0.01) * 2;
-            this.ctx.fillRect(x, horizonY + seaHeight / 2 + shimmerOffset, 10, 2);
+        ctx.fillStyle = 'rgba(100,180,255,0.3)';
+        for (let x = 0; x < this.width; x += 30) {
+            const shimmer = Math.sin(x * 0.05 + state.playerZ * 0.008) * 3;
+            ctx.fillRect(x, horizonY + seaH / 2 + shimmer, 15, 2);
         }
     }
 
-    drawRoad(gameState) {
-        const baseSegment = track.getSegment(gameState.playerZ);
+    drawRoad(state) {
+        const ctx = this.ctx;
+        const baseSegment = track.getSegment(state.playerZ);
         if (!baseSegment) return;
 
-        const baseIndex = baseSegment.index;
-        const horizonY = this.height * 0.4;
-        const roadStartY = this.height * 0.45;
-
-        // Calculate camera position
-        let x = 0;
-        let dx = 0;
+        const baseIdx = baseSegment.index;
+        const horizonY = this.height * 0.42;
         let maxY = this.height;
 
-        // Store projected segments for sprite rendering
-        this.projectedSegments = [];
+        this.projected = [];
+        let x = 0, dx = 0;
 
-        // Project road segments from far to near
+        // Project segments far to near
         for (let n = this.drawDistance; n > 0; n--) {
-            const segmentIndex = (baseIndex + n) % track.totalSegments;
-            const segment = track.getSegmentByIndex(segmentIndex);
-            if (!segment) continue;
+            const idx = (baseIdx + n) % track.totalSegments;
+            const seg = track.getSegmentByIndex(idx);
+            if (!seg) continue;
 
-            // Calculate segment world position
-            const segmentZ = (n * track.segmentLength);
-
-            // Camera projection
-            const camZ = gameState.playerZ % track.segmentLength;
-            const z = segmentZ - camZ;
-
+            const z = n * track.segmentLength - (state.playerZ % track.segmentLength);
             if (z <= 0) continue;
 
-            // Project to screen
             const scale = this.cameraDepth / z;
-            const projectedY = roadStartY + (1 - scale) * (this.height - roadStartY);
+            const projY = horizonY + (1 - scale) * (this.height - horizonY);
 
-            if (projectedY >= maxY) continue;
+            if (projY >= maxY) continue;
 
-            // Accumulate curve offset
             x += dx;
-            dx += segment.curve * scale * 2;
+            dx += seg.curve * scale * 2.5;
 
-            // Add player steering offset
-            const playerOffset = -gameState.playerX * scale * this.width * 0.5;
+            const playerOffset = -state.playerX * scale * this.width * 0.6;
+            const projX = this.width / 2 + x + playerOffset;
+            const roadW = track.roadWidth * scale;
 
-            const projectedX = this.width / 2 + x + playerOffset;
-            const roadWidth = track.roadWidth * scale;
-
-            // Store for rendering
-            this.projectedSegments.push({
-                index: segmentIndex,
-                y: projectedY,
-                x: projectedX,
-                scale: scale,
-                width: roadWidth,
-                segment: segment,
-                z: z
+            this.projected.push({
+                idx, y: projY, x: projX, scale, width: roadW, seg, z
             });
 
-            maxY = projectedY;
+            maxY = projY;
         }
 
-        // Render from far to near (reverse order for proper overlap)
-        for (let i = 0; i < this.projectedSegments.length; i++) {
-            const curr = this.projectedSegments[i];
-            const next = this.projectedSegments[i + 1];
-
-            if (!next) continue;
-
-            // Draw segment
-            this.drawRoadSegment(curr, next, gameState);
+        // Draw far to near
+        for (let i = 0; i < this.projected.length - 1; i++) {
+            const curr = this.projected[i];
+            const next = this.projected[i + 1];
+            this.drawRoadSegment(curr, next, state);
         }
 
-        // Draw scenery sprites (far to near)
-        for (let i = 0; i < this.projectedSegments.length; i++) {
-            this.drawSegmentScenery(this.projectedSegments[i], gameState);
+        // Scenery
+        for (let i = 0; i < this.projected.length; i++) {
+            this.drawScenery(this.projected[i], state);
         }
 
-        // Draw opponent cars
-        this.drawOpponentCars(gameState);
+        // Opponents
+        this.drawOpponents(state);
     }
 
-    drawRoadSegment(curr, next, gameState) {
-        const segment = curr.segment;
-        const isEven = segment.index % 2 === 0;
+    drawRoadSegment(curr, next, state) {
+        const ctx = this.ctx;
+        const seg = curr.seg;
+        const alt = seg.index % 2 === 0;
 
         // Grass
-        const grassColor = isEven ? track.colors.grass.light : track.colors.grass.dark;
-        this.ctx.fillStyle = grassColor;
-        this.ctx.fillRect(0, next.y, this.width, curr.y - next.y + 1);
+        ctx.fillStyle = alt ? '#3a6b3a' : '#2d5a2d';
+        ctx.fillRect(0, next.y, this.width, curr.y - next.y + 1);
 
         // Rumble strips
-        const rumbleColor = isEven ? track.colors.rumble.light : track.colors.rumble.dark;
-        const rumbleWidth = track.rumbleWidth * curr.scale;
-
-        this.ctx.fillStyle = rumbleColor;
+        const rumbleW = 80 * curr.scale;
+        ctx.fillStyle = alt ? '#cc0000' : '#ffffff';
 
         // Left rumble
-        this.drawTrapezoid(
-            curr.x - curr.width / 2 - rumbleWidth, curr.y,
-            next.x - next.width / 2 - rumbleWidth * (next.scale / curr.scale), next.y,
-            rumbleWidth, rumbleWidth * (next.scale / curr.scale)
+        this.trapezoid(
+            curr.x - curr.width / 2 - rumbleW, curr.y,
+            next.x - next.width / 2 - rumbleW * (next.scale / curr.scale), next.y,
+            rumbleW, rumbleW * (next.scale / curr.scale)
         );
 
         // Right rumble
-        this.drawTrapezoid(
+        this.trapezoid(
             curr.x + curr.width / 2, curr.y,
             next.x + next.width / 2, next.y,
-            rumbleWidth, rumbleWidth * (next.scale / curr.scale)
+            rumbleW, rumbleW * (next.scale / curr.scale)
         );
 
-        // Road surface
-        const roadColor = isEven ? track.colors.road.light : track.colors.road.dark;
-        this.ctx.fillStyle = roadColor;
-
-        this.drawTrapezoid(
+        // Road
+        ctx.fillStyle = alt ? '#505050' : '#454545';
+        this.trapezoid(
             curr.x - curr.width / 2, curr.y,
             next.x - next.width / 2, next.y,
             curr.width, next.width
         );
 
         // Lane markings
-        if (segment.index % 4 < 2) {
-            const laneWidth = curr.width * 0.02;
-
-            this.ctx.fillStyle = track.colors.lane;
-
-            // Center line
-            this.drawTrapezoid(
-                curr.x - laneWidth / 2, curr.y,
-                next.x - laneWidth / 2 * (next.scale / curr.scale), next.y,
-                laneWidth, laneWidth * (next.scale / curr.scale)
+        if (seg.index % 6 < 3) {
+            ctx.fillStyle = '#cccccc';
+            const laneW = curr.width * 0.015;
+            this.trapezoid(
+                curr.x - laneW / 2, curr.y,
+                next.x - laneW / 2 * (next.scale / curr.scale), next.y,
+                laneW, laneW * (next.scale / curr.scale)
             );
         }
 
-        // Start/finish line
-        if (segment.isStartLine) {
-            const stripeWidth = curr.width / 8;
-            for (let i = 0; i < 8; i++) {
-                this.ctx.fillStyle = i % 2 === 0 ? '#ffffff' : '#000000';
-                const stripeX = curr.x - curr.width / 2 + i * stripeWidth;
-                const nextStripeX = next.x - next.width / 2 + i * stripeWidth * (next.scale / curr.scale);
-
-                this.drawTrapezoid(
-                    stripeX, curr.y,
-                    nextStripeX, next.y,
-                    stripeWidth, stripeWidth * (next.scale / curr.scale)
-                );
+        // Start line
+        if (seg.startLine || seg.index === 0) {
+            const stripeW = curr.width / 10;
+            for (let i = 0; i < 10; i++) {
+                ctx.fillStyle = i % 2 === 0 ? '#fff' : '#000';
+                const sx = curr.x - curr.width / 2 + i * stripeW;
+                const nx = next.x - next.width / 2 + i * stripeW * (next.scale / curr.scale);
+                this.trapezoid(sx, curr.y, nx, next.y, stripeW, stripeW * (next.scale / curr.scale));
             }
         }
 
-        // Tunnel effect (darken)
-        if (segment.isTunnel) {
-            this.ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-            this.ctx.fillRect(0, next.y, this.width, curr.y - next.y + 1);
+        // Tunnel
+        if (seg.tunnel) {
+            ctx.fillStyle = 'rgba(0,0,0,0.65)';
+            ctx.fillRect(0, next.y, this.width, curr.y - next.y + 1);
 
             // Tunnel lights
-            if (segment.index % 10 === 0) {
-                this.ctx.fillStyle = '#ffcc00';
-                const lightY = (curr.y + next.y) / 2 - 20;
-                this.ctx.fillRect(curr.x - 4, lightY, 8, 4);
+            if (seg.index % 12 === 0) {
+                const lightY = (curr.y + next.y) / 2 - 15 * curr.scale;
+                ctx.fillStyle = '#ffcc00';
+                ctx.fillRect(curr.x - 5 * curr.scale, lightY, 10 * curr.scale, 4 * curr.scale);
 
-                // Light glow
-                this.ctx.fillStyle = 'rgba(255, 200, 0, 0.3)';
-                this.ctx.fillRect(curr.x - 20, lightY - 10, 40, 30);
+                ctx.fillStyle = 'rgba(255,200,0,0.2)';
+                ctx.fillRect(curr.x - 30 * curr.scale, lightY - 10 * curr.scale, 60 * curr.scale, 40 * curr.scale);
             }
         }
     }
 
-    drawTrapezoid(x1, y1, x2, y2, w1, w2) {
-        this.ctx.beginPath();
-        this.ctx.moveTo(x1, y1);
-        this.ctx.lineTo(x1 + w1, y1);
-        this.ctx.lineTo(x2 + w2, y2);
-        this.ctx.lineTo(x2, y2);
-        this.ctx.closePath();
-        this.ctx.fill();
+    trapezoid(x1, y1, x2, y2, w1, w2) {
+        const ctx = this.ctx;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x1 + w1, y1);
+        ctx.lineTo(x2 + w2, y2);
+        ctx.lineTo(x2, y2);
+        ctx.closePath();
+        ctx.fill();
     }
 
-    drawSegmentScenery(projected, gameState) {
-        const segment = projected.segment;
-        const scale = projected.scale;
+    drawScenery(proj, state) {
+        const seg = proj.seg;
 
-        // Draw left scenery
-        segment.sceneryLeft.forEach(scenery => {
-            this.drawSprite(
-                projected.x - projected.width / 2 * scenery.offset,
-                projected.y,
-                scale,
-                scenery.type,
-                gameState
-            );
-        });
+        // Left scenery
+        if (seg.sceneryLeft) {
+            seg.sceneryLeft.forEach(s => {
+                this.drawSprite(
+                    proj.x - proj.width / 2 * (s.offset || 1.3),
+                    proj.y, proj.scale, s.type
+                );
+            });
+        }
 
-        // Draw right scenery
-        segment.sceneryRight.forEach(scenery => {
-            this.drawSprite(
-                projected.x + projected.width / 2 * scenery.offset,
-                projected.y,
-                scale,
-                scenery.type,
-                gameState
-            );
-        });
+        // Right scenery
+        if (seg.sceneryRight) {
+            seg.sceneryRight.forEach(s => {
+                this.drawSprite(
+                    proj.x + proj.width / 2 * (s.offset || 1.3),
+                    proj.y, proj.scale, s.type
+                );
+            });
+        }
     }
 
-    drawSprite(x, y, scale, spriteType, gameState) {
-        const sprite = spriteSystem.getSprite(spriteType);
+    drawSprite(x, y, scale, type) {
+        const sprite = sprites.get(type);
         if (!sprite) return;
 
-        const spriteScale = scale * 3; // Base sprite scale
-        const width = sprite.width * spriteScale;
-        const height = sprite.height * spriteScale;
+        const s = scale * 3.5;
+        const w = sprite.width * s;
+        const h = sprite.height * s;
 
-        if (width < 2 || height < 2) return;
+        if (w < 3 || h < 3) return;
+        if (x + w < 0 || x - w > this.width) return;
+        if (y < 0 || y - h > this.height) return;
 
-        // Position sprite at bottom
-        const spriteX = x - width / 2;
-        const spriteY = y - height;
-
-        // Skip if off screen
-        if (spriteX + width < 0 || spriteX > this.width) return;
-        if (spriteY + height < 0 || spriteY > this.height) return;
-
-        // Draw sprite
-        this.ctx.drawImage(sprite, spriteX, spriteY, width, height);
+        this.ctx.drawImage(sprite, x - w / 2, y - h, w, h);
     }
 
-    drawOpponentCars(gameState) {
-        if (!gameState.opponents) return;
+    drawOpponents(state) {
+        if (!state.opponents) return;
 
-        gameState.opponents.forEach(opponent => {
-            // Calculate relative position
-            const relativeZ = opponent.z - gameState.playerZ;
+        state.opponents.forEach((opp, i) => {
+            const relZ = opp.z - state.playerZ;
+            if (relZ < 0 || relZ > this.drawDistance * track.segmentLength) return;
 
-            // Skip if behind or too far
-            if (relativeZ < 0 || relativeZ > this.drawDistance * track.segmentLength) return;
+            // Find projection
+            const segOff = Math.floor(relZ / track.segmentLength);
+            const projIdx = this.projected.findIndex(p => {
+                const dist = Math.abs(this.drawDistance - segOff - (this.projected.indexOf(p)));
+                return dist < 3;
+            });
 
-            // Find matching projected segment
-            const segmentOffset = Math.floor(relativeZ / track.segmentLength);
-            const projectedIndex = this.projectedSegments.findIndex(p =>
-                Math.abs(this.projectedSegments.indexOf(p) - (this.drawDistance - segmentOffset)) < 2
-            );
+            if (projIdx < 0) return;
+            const proj = this.projected[projIdx];
+            if (!proj) return;
 
-            if (projectedIndex < 0 || projectedIndex >= this.projectedSegments.length - 1) return;
+            const sprite = opp.sprite;
+            if (!sprite) return;
 
-            const projected = this.projectedSegments[projectedIndex];
+            const laneOff = opp.lane * proj.width * 0.35;
+            const carX = proj.x + laneOff;
+            const carY = proj.y;
 
-            if (!projected) return;
+            const s = proj.scale * 3;
+            const w = sprite.width * s;
+            const h = sprite.height * s;
 
-            const scale = projected.scale;
-            const carSprite = opponent.sprite;
+            if (w < 5) return;
 
-            if (!carSprite) return;
-
-            // Calculate car position on road
-            const laneOffset = opponent.lane * projected.width * 0.3;
-            const carX = projected.x + laneOffset;
-            const carY = projected.y;
-
-            // Scale and draw
-            const carWidth = carSprite.width * scale * 2.5;
-            const carHeight = carSprite.height * scale * 2.5;
-
-            if (carWidth < 4 || carHeight < 4) return;
-
-            this.ctx.drawImage(
-                carSprite,
-                carX - carWidth / 2,
-                carY - carHeight,
-                carWidth,
-                carHeight
-            );
+            this.ctx.drawImage(sprite, carX - w / 2, carY - h, w, h);
         });
     }
 
-    drawPlayerCar(gameState) {
-        const sprite = spriteSystem.getSprite('playerCar');
+    drawPlayerCar(state) {
+        let sprite;
+        if (state.steering < -0.3) {
+            sprite = sprites.get('playerCarLeft');
+        } else if (state.steering > 0.3) {
+            sprite = sprites.get('playerCarRight');
+        } else {
+            sprite = sprites.get('playerCar');
+        }
+
+        if (!sprite) sprite = sprites.get('playerCar');
         if (!sprite) return;
 
-        // Car position at bottom of screen
-        const carWidth = sprite.width * 2.5;
-        const carHeight = sprite.height * 2.5;
+        const scale = 3;
+        const w = sprite.width * scale;
+        const h = sprite.height * scale;
 
-        const carX = this.width / 2 - carWidth / 2;
-        const carY = this.height - carHeight - 20;
+        const carX = this.width / 2 - w / 2;
+        const carY = this.height - h - 25;
 
-        // Steering tilt effect
-        const steerOffset = gameState.steering * 15;
+        // Slight steering tilt
+        const tilt = state.steering * 8;
 
         this.ctx.save();
-        this.ctx.translate(carX + carWidth / 2, carY + carHeight / 2);
-        this.ctx.rotate(steerOffset * Math.PI / 180);
-        this.ctx.translate(-carWidth / 2, -carHeight / 2);
-
-        // Draw car
-        this.ctx.drawImage(sprite, 0, 0, carWidth, carHeight);
-
+        this.ctx.translate(carX + w / 2, carY + h / 2);
+        this.ctx.rotate(tilt * Math.PI / 180);
+        this.ctx.drawImage(sprite, -w / 2, -h / 2, w, h);
         this.ctx.restore();
 
-        // Speed lines effect when going fast
-        if (gameState.speed > gameState.maxSpeed * 0.7) {
-            const intensity = (gameState.speed / gameState.maxSpeed - 0.7) / 0.3;
-            this.ctx.strokeStyle = `rgba(255, 255, 255, ${intensity * 0.3})`;
+        // Speed lines
+        if (state.speed > state.maxSpeed * 0.75) {
+            const intensity = (state.speed / state.maxSpeed - 0.75) / 0.25;
+            this.ctx.strokeStyle = `rgba(255,255,255,${intensity * 0.4})`;
             this.ctx.lineWidth = 2;
 
-            for (let i = 0; i < 5; i++) {
-                const lineX = carX + Math.random() * carWidth;
-                const lineY = carY + carHeight + 10;
-                const lineLength = 20 + Math.random() * 30;
+            for (let i = 0; i < 6; i++) {
+                const lx = carX + Math.random() * w;
+                const ly = carY + h + 5;
+                const len = 15 + Math.random() * 25;
 
                 this.ctx.beginPath();
-                this.ctx.moveTo(lineX, lineY);
-                this.ctx.lineTo(lineX, lineY + lineLength);
+                this.ctx.moveTo(lx, ly);
+                this.ctx.lineTo(lx, ly + len);
                 this.ctx.stroke();
             }
         }
+
+        // Turbo flames
+        if (state.turboActive) {
+            this.ctx.fillStyle = '#ff6600';
+            this.ctx.fillRect(carX + w / 2 - 8, carY + h, 16, 12 + Math.random() * 8);
+            this.ctx.fillStyle = '#ffff00';
+            this.ctx.fillRect(carX + w / 2 - 5, carY + h, 10, 8 + Math.random() * 6);
+        }
     }
 
-    applyRetroEffect() {
+    drawTurboMeter(state) {
+        const ctx = this.ctx;
+        const x = 20;
+        const y = this.height - 100;
+        const w = 25;
+        const h = 80;
+
+        // Background
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+
+        // Border
+        ctx.strokeStyle = '#444';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, w, h);
+
+        // Fill
+        const fillH = (state.turbo / 100) * h;
+        const grad = ctx.createLinearGradient(x, y + h, x, y);
+        grad.addColorStop(0, '#00ff00');
+        grad.addColorStop(0.5, '#ffff00');
+        grad.addColorStop(1, '#ff0000');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y + h - fillH, w, fillH);
+
+        // Label
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 10px monospace';
+        ctx.fillText('TURBO', x - 3, y + h + 15);
+
+        // Ready indicator
+        if (state.turbo >= 100) {
+            ctx.fillStyle = state.turboActive ? '#ff0' : (Date.now() % 500 < 250 ? '#0f0' : '#0a0');
+            ctx.fillRect(x, y - 12, w, 8);
+        }
+    }
+
+    // ================== PARTICLES ==================
+
+    addParticle(x, y, type) {
+        if (this.particles.length >= this.maxParticles) {
+            this.particles.shift();
+        }
+
+        this.particles.push({
+            x, y, type,
+            vx: (Math.random() - 0.5) * 4,
+            vy: -Math.random() * 3 - 1,
+            life: 1,
+            decay: 0.02 + Math.random() * 0.02
+        });
+    }
+
+    updateParticles(dt) {
+        this.particles = this.particles.filter(p => {
+            p.x += p.vx;
+            p.y += p.vy;
+            p.vy += 0.1; // gravity
+            p.life -= p.decay;
+            return p.life > 0;
+        });
+    }
+
+    drawParticles(state) {
+        const ctx = this.ctx;
+
+        this.particles.forEach(p => {
+            const alpha = p.life;
+            const size = 4 + (1 - p.life) * 8;
+
+            if (p.type === 'spark') {
+                ctx.fillStyle = `rgba(255,255,0,${alpha})`;
+            } else if (p.type === 'smoke') {
+                ctx.fillStyle = `rgba(150,150,150,${alpha * 0.5})`;
+            } else {
+                ctx.fillStyle = `rgba(255,100,0,${alpha})`;
+            }
+
+            ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
+        });
+    }
+
+    // ================== RETRO EFFECTS ==================
+
+    drawRetroEffects() {
+        const ctx = this.ctx;
+
         // Scanlines
-        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
-        for (let y = 0; y < this.height; y += 3) {
-            this.ctx.fillRect(0, y, this.width, 1);
+        ctx.fillStyle = 'rgba(0,0,0,0.08)';
+        for (let y = 0; y < this.height; y += 4) {
+            ctx.fillRect(0, y, this.width, 2);
         }
 
         // Vignette
-        const gradient = this.ctx.createRadialGradient(
-            this.width / 2, this.height / 2, this.height * 0.3,
+        const vignette = ctx.createRadialGradient(
+            this.width / 2, this.height / 2, this.height * 0.4,
             this.width / 2, this.height / 2, this.height
         );
-        gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 0.4)');
-        this.ctx.fillStyle = gradient;
-        this.ctx.fillRect(0, 0, this.width, this.height);
+        vignette.addColorStop(0, 'rgba(0,0,0,0)');
+        vignette.addColorStop(1, 'rgba(0,0,0,0.5)');
+        ctx.fillStyle = vignette;
+        ctx.fillRect(0, 0, this.width, this.height);
     }
 
-    // Flash effect for collisions etc.
-    flash(color = 'white', duration = 100) {
-        this.ctx.fillStyle = color;
-        this.ctx.globalAlpha = 0.5;
+    flash(color = 'white', alpha = 0.5) {
+        this.ctx.fillStyle = color === 'white' ?
+            `rgba(255,255,255,${alpha})` : `rgba(255,0,0,${alpha})`;
         this.ctx.fillRect(0, 0, this.width, this.height);
-        this.ctx.globalAlpha = 1;
-
-        setTimeout(() => {
-            // Effect ends naturally on next frame
-        }, duration);
     }
 }
